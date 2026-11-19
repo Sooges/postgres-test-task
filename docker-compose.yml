@@ -1,0 +1,70 @@
+name: privat-task
+
+x-postgres: &postgres
+  build: ./docker
+  image: privat-task-postgres:17
+  restart: unless-stopped
+  command:
+    - postgres
+    - -c
+    - wal_level=logical
+    - -c
+    - shared_preload_libraries=pg_cron
+    - -c
+    - cron.database_name=${POSTGRES_DB:-appdb}
+    - -c
+    - cron.use_background_workers=on
+    - -c
+    - max_worker_processes=20
+  environment: &postgres-env
+    POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    REPLICATION_USER: ${REPLICATION_USER:-replicator}
+    REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+    TZ: UTC
+    PGTZ: UTC
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+
+services:
+  primary:
+    <<: *postgres
+    container_name: privat-task-primary
+    ports:
+      - "${PRIMARY_PORT:-5433}:5432"
+    volumes:
+      - primary-data:/var/lib/postgresql/data
+      - ./checks:/checks:ro
+      - ./sql/shared/01_table.sql:/docker-entrypoint-initdb.d/01_table.sql:ro
+      - ./sql/shared/02_partitions.sql:/docker-entrypoint-initdb.d/02_partitions.sql:ro
+      - ./sql/primary/03_guid_uniqueness.sql:/docker-entrypoint-initdb.d/03_guid_uniqueness.sql:ro
+      - ./sql/primary/04_generate.sql:/docker-entrypoint-initdb.d/04_generate.sql:ro
+      - ./sql/primary/05_client_totals.sql:/docker-entrypoint-initdb.d/05_client_totals.sql:ro
+      - ./sql/primary/06_jobs.sql:/docker-entrypoint-initdb.d/06_jobs.sql:ro
+      - ./sql/primary/07_publication.sh:/docker-entrypoint-initdb.d/07_publication.sh:ro
+
+  replica:
+    <<: *postgres
+    container_name: privat-task-replica
+    environment:
+      <<: *postgres-env
+      PRIMARY_HOST: primary
+    depends_on:
+      primary:
+        condition: service_healthy
+    ports:
+      - "${REPLICA_PORT:-5434}:5432"
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+      - ./checks:/checks:ro
+      - ./sql/shared/01_table.sql:/docker-entrypoint-initdb.d/01_table.sql:ro
+      - ./sql/shared/02_partitions.sql:/docker-entrypoint-initdb.d/02_partitions.sql:ro
+      - ./sql/replica/03_subscription.sh:/docker-entrypoint-initdb.d/03_subscription.sh:ro
+
+volumes:
+  primary-data:
+  replica-data:
